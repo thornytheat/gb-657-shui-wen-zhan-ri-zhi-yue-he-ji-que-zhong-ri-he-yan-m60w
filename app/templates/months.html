@@ -7,29 +7,29 @@
 
 {% if not batch %}
 <section class="empty"><p class="empty-line">先运行日值样例。</p></section>
-{% else %}
-
-<section class="kpis" aria-label="月报合计">
-  <div class="kpi"><span class="kpi-label">输入日值</span><span class="kpi-value mono">{{ hydro_accounts.source }}</span></div>
-  <div class="kpi"><span class="kpi-label">采纳</span><span class="kpi-value mono">{{ hydro_accounts.accepted }}</span></div>
-  <div class="kpi"><span class="kpi-label">重复版本</span><span class="kpi-value mono">{{ hydro_accounts.duplicates }}</span></div>
-  <div class="kpi"><span class="kpi-label">差额</span><span class="kpi-value mono">{{ hydro_accounts.delta }}</span></div>
-</section>
-
-<section class="panel">
-  <div class="panel-head"><h2 class="panel-title">站点月报</h2><span class="panel-sub mono">闰年二月 · 29 日</span></div>
-  <div class="table-wrap"><table class="table table-dense">
-    <thead><tr><th>行</th><th>站号</th><th>月份</th><th class="num">雨量</th><th class="num">实有日</th><th class="num">缺日</th><th>状态</th></tr></thead>
-    <tbody>{% for row in hydro_months %}<tr><td class="mono">{{ loop.index }}</td><td class="mono">{{ row.station }}</td><td class="mono">{{ row.month }}</td><td class="num mono">{{ row.rainfall_mm }} mm</td><td class="num mono">{{ row.days }}</td><td class="num mono">{{ row.missing_days }}</td><td><span class="badge {% if row.state == 'complete' %}badge-ok{% else %}badge-warn{% endif %}">{{ row.state }}</span></td></tr>{% endfor %}</tbody>
-  </table></div>
-</section>
-
-<section class="panel">
-  <div class="panel-head"><h2 class="panel-title">日值版本</h2><span class="panel-sub mono">零雨保留 · 高版本优先</span></div>
-  <div class="table-wrap"><table class="table table-dense">
-    <thead><tr><th>站号</th><th>日期</th><th class="num">雨量</th><th class="num">版本</th><th>判定</th></tr></thead>
-    <tbody>{% for row in hydro_selected.selected %}<tr><td class="mono">{{ row.station }}</td><td class="mono">{{ row.date }}</td><td class="num mono">{{ row.rainfall_mm }} mm</td><td class="num mono">{{ row.version }}</td><td><span class="badge badge-ok">采纳</span></td></tr>{% endfor %}{% for row in hydro_selected.duplicates %}<tr><td class="mono">{{ row.station }}</td><td class="mono">{{ row.date }}</td><td class="num mono">{{ row.rainfall_mm }} mm</td><td class="num mono">{{ row.version }}</td><td><span class="badge badge-warn">低版本</span></td></tr>{% endfor %}</tbody>
-  </table></div>
-</section>
 {% endif %}
+
+<section class="kpis" aria-label="补报合计">
+  <div class="kpi"><span class="kpi-label">补报观测</span><span class="kpi-value mono">{{ hydro_supplements.observations|length }}</span></div>
+  <div class="kpi"><span class="kpi-label">采纳</span><span class="kpi-value mono">{{ hydro_decisions|selectattr('status', 'equalto', 'accepted')|list|length }}</span></div>
+  <div class="kpi"><span class="kpi-label">隔离冲突</span><span class="kpi-value mono">{{ hydro_decisions|selectattr('status', 'in', ['version_conflict', 'overlap_conflict', 'daily_conflict'])|list|length }}</span></div>
+  <div class="kpi"><span class="kpi-label">归属待定</span><span class="kpi-value mono">{{ hydro_decisions|selectattr('status', 'equalto', 'pending')|list|length }}</span></div>
+  <div class="kpi"><span class="kpi-label">待重算站点</span><span class="kpi-value mono">{{ hydro_supplements.recompute_pending|length }}</span></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2 class="panel-title">站点月量</h2><span class="panel-sub mono">日值与累计分列 · 累计不拆日值</span></div>
+  <div class="table-wrap"><table class="table table-dense">
+    <thead><tr><th>站号</th><th>月份</th><th class="num">日值 mm</th><th class="num">累计 mm</th><th class="num">月量 mm</th><th class="num">实有日</th><th class="num">缺日</th><th class="num">冲突</th><th class="num">待定 mm</th><th>状态</th></tr></thead>
+    <tbody>{% for row in hydro_months %}<tr><td class="mono">{{ row.station }}</td><td class="mono">{{ row.month }}</td><td class="num mono">{{ row.daily_mm }}</td><td class="num mono">{{ row.cumulative_mm }}</td><td class="num mono">{{ row.rainfall_mm }}</td><td class="num mono">{{ row.days }}</td><td class="num mono">{{ row.missing_days }}</td><td class="num mono">{{ row.conflict_count }}</td><td class="num mono">{{ row.pending_reported_mm }}</td><td><span class="badge {% if row.state == 'complete' %}badge-ok{% elif row.state == 'partial' %}badge-warn{% else %}badge-bad{% endif %}">{{ row.state }}</span></td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2 class="panel-title">补报依据</h2><span class="panel-sub mono">累计只登记起止日与总量 · 重叠覆盖只计一次</span></div>
+  <div class="table-wrap"><table class="table table-dense">
+    <thead><tr><th>观测</th><th>站号</th><th>类型</th><th>覆盖</th><th class="num">雨量</th><th class="num">版本</th><th>判定</th><th>说明</th></tr></thead>
+    <tbody>{% for row in hydro_supplements.observations %}{% set decision = hydro_decisions|selectattr('observation_id', 'equalto', row.observation_id)|first %}<tr><td class="mono">{{ row.observation_id }}</td><td class="mono">{{ row.station }}</td><td>{{ '逐日' if row.kind == 'daily' else '累计' }}</td><td class="mono">{% if row.kind == 'daily' %}{{ row.day }}{% else %}{{ row.start_day }} ~ {{ row.end_day }}{% endif %}</td><td class="num mono">{% if row.kind == 'daily' %}{{ row.rainfall_mm }}{% else %}{{ row.total_mm }}{% endif %} mm</td><td class="num mono">{{ row.version }}</td><td><span class="badge {% if decision and decision.status == 'accepted' %}badge-ok{% elif decision and decision.status in ['pending', 'superseded', 'deduped'] %}badge-warn{% else %}badge-bad{% endif %}">{{ decision.status if decision else '—' }}</span></td><td class="cell-note">{{ decision.reason_label if decision and decision.reason_label else '' }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
 {% endblock %}

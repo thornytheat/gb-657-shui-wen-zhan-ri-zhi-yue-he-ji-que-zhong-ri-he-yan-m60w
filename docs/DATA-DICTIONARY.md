@@ -77,8 +77,52 @@
 
 文件级 `E_*`：`E_EMPTY_FILE`、`E_HEADER_ONLY`、`E_ALL_BLANK`、`E_HEADER_INVALID`、`E_DECODE`、`E_SAMPLE_UNKNOWN`、`E_CONTRACT_INVALID`、`E_BATCH_NOT_FOUND`。
 
-行级 `Q_*`：`Q_COLUMN_COUNT`、`Q_TRUNCATED_ROW`、`Q_MISSING_READING`、`Q_BAD_READING`、`Q_BAD_TIME`、`Q_UNKNOWN_METER`、`Q_BAD_REGISTER`、`Q_BAD_UNIT`、`Q_BAD_READ_TYPE`、`Q_NEGATIVE_READING`、`Q_EXCEEDS_CAPACITY`、`Q_REVERSE_READING`、`Q_DUPLICATE_CONFLICT`、`Q_METER_RETIRED`。
+行级 `Q_*`：`Q_COLUMN_COUNT`、`Q_TRUNCATED_ROW`、`Q_MISSING_READING`、`Q_BAD_READING`、`Q_BAD_TIME`、`Q_UNKNOWN_METER`、`Q_BAD_REGISTER`、`Q_BAD_UNIT`、`Q_BAD_READ_TYPE`、`Q_NEGATIVE_READING`、`Q_EXCEEDS_CAPACITY`、`Q_REVERSE_READING`、`Q_DUPLICATE_CONFLICT`、`Q_METER_RETIRED`、`Q_HYDRO_CONFLICT_VERSION`、`Q_HYDRO_CONFLICT_DAILY_CUMULATIVE`、`Q_HYDRO_CONFLICT_CUMULATIVE_OVERLAP`。
 
-标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`。
+标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`、`K_HYDRO_CUMULATIVE_INCLUDED`、`K_HYDRO_COVERAGE_DEDUPED`、`K_HYDRO_DAILY_RECONCILED`、`K_HYDRO_ATTRIBUTION_PENDING`、`K_HYDRO_SUPERSEDED`。
+
+文件级补报错误 `E_*`：`E_HYDRO_BAD_OBSERVATION`（载荷非法）、`E_HYDRO_ATTRIBUTION_INVALID`（归属证据不完整/加总不符）、`E_HYDRO_STALE_REVISION`（过期决定）、`E_HYDRO_REQUEST_REUSED`（请求号被另一载荷占用）、`E_HYDRO_RECOMPUTE_FAILED`（观测已存/重算失败，原月量保留）。
 
 唯一来源：`app/reasons.py`；页面与导出的原因文案都从它取。
+
+## 10 雨量补报观测
+
+补报观测是一条独立的证据记录，不是读数行，也不进电表区间/账单链路。
+
+| 字段 | 逐日 `kind=daily` | 跨日累计 `kind=cumulative` | 说明 |
+|---|---|---|---|
+| `station` | 必填 | 必填 | 站号，字符串保形（`007` ≠ `7`） |
+| `day` | 必填 | — | 自然日 `YYYY-MM-DD`；闰日按真实日历校验（`2024-02-29` 合法，`2023-02-29` 拒绝） |
+| `start_day` / `end_day` | — | 必填 | 闭区间覆盖的起止自然日，`start_day ≤ end_day` |
+| `rainfall_mm` | 必填 | — | 当日雨量，非负，登记时量化到 0.1 mm |
+| `total_mm` | — | 必填 | 整段累计雨量，非负；**不拆成日值** |
+| `attribution` | — | 可选 | `{月份: 雨量}`；跨月时必须给全且加总等于 `total_mm`，否则 `pending` |
+| `version` | 可选（默认 1） | 可选 | 同键多版本高版本优先；同版本不同值全部隔离 |
+| `request_id` | 必填 | 必填 | 请求幂等键；同号同载荷不新增观测，同号不同载荷 409 |
+| `base_revision` | 可选 | 可选 | 请求所依据的站点决定号；小于服务端当前值即 409 |
+
+判定状态（`hydro_decisions.status`）：
+
+| 状态 | 含义 | 是否计入月量 |
+|---|---|---|
+| `accepted` | 采纳 | 是 |
+| `superseded` | 被更高版本取代 | 否 |
+| `deduped` | 覆盖完全重叠或同值重复，只计一次 | 否（另一条已计） |
+| `version_conflict` | 同键同版本不同值 | 否 |
+| `overlap_conflict` | 累计覆盖部分重叠 | 否 |
+| `daily_conflict` | 覆盖段内逐日之和与累计不符 | 否（月量退回日值） |
+| `pending` | 跨月归属证据不足 | 否，单列 `pending_reported_mm` |
+
+月量（`GET /api/hydro/months`）：
+
+| 字段 | 含义 |
+|---|---|
+| `daily_mm` | 未转旁证的逐日观测之和 |
+| `cumulative_mm` | 被采纳累计观测的分月归属之和 |
+| `rainfall_mm` | `daily_mm + cumulative_mm`，月量口径 |
+| `shadowed_daily_mm` | 已被累计覆盖、转作旁证的逐日观测之和（不重复计入） |
+| `days` / `missing_days` | **只认逐日观测**；累计补报不增加实有日 |
+| `calendar_days` | 当地自然日天数（闰年二月为 29） |
+| `state` | `complete` / `partial` / `conflict` / `pending` |
+| `conflict_count` | 落在这个月的冲突观测条数（含跨月观测的每个覆盖月） |
+| `pending_count` / `pending_reported_mm` | 待定观测条数 / 待定总量（总量挂起点月） |

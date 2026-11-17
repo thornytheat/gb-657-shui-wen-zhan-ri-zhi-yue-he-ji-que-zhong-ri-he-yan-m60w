@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -26,10 +28,22 @@ PAGES = ("/", "/readings", "/intervals", "/months", "/batches", "/export")
 
 def create_app(settings: config.Settings | None = None) -> FastAPI:
     settings = settings or config.Settings.from_env()
+
+    @asynccontextmanager
+    async def lifespan(application):
+        """上次进程在「观测已落库、月量未核算」处中断时，启动即补齐。"""
+        from .modules.m5_months import supplement
+        try:
+            supplement.recover(application.state.store)
+        except Exception:  # 恢复不了也不能挡住服务启动，待重算表仍留着
+            pass
+        yield
+
     app = FastAPI(
         title="hydrocalendar 水文站日值月合计缺重日核验",
         description="日值采信 → 站点日历 → 缺重日 → 月量计算 → 跨站复核 → 批次导出",
         version=settings.rule_version,
+        lifespan=lifespan,
     )
     app.state.settings = settings
     app.state.store = Store(settings.db_path)

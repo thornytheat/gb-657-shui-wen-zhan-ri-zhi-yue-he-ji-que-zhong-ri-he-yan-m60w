@@ -22,6 +22,8 @@ RULE_VERSION = "hydrocalendar/1.0.0"
 
 USAGE_QUANT = Decimal("0.001")
 MONEY_QUANT = Decimal("0.01")
+# 雨量刻度：日值与累计补报都按 0.1 mm 登记（与电费换算无关）
+RAIN_QUANT = Decimal("0.1")
 # 满量翻转判定：上一条读数需达到满量的这个比例，否则按倒走隔离
 ROLLOVER_MIN_RATIO = Decimal("0.9")
 

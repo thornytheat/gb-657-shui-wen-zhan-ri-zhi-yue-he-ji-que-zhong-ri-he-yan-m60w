@@ -74,6 +74,61 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS hydro_stations (
+    station TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS hydro_observations (
+    observation_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    request_digest TEXT NOT NULL,
+    station TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    day TEXT,
+    start_day TEXT,
+    end_day TEXT,
+    rainfall_mm TEXT,
+    total_mm TEXT,
+    attribution_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    seq INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hydro_obs_station ON hydro_observations(station, seq);
+CREATE TABLE IF NOT EXISTS hydro_decisions (
+    observation_id TEXT PRIMARY KEY,
+    station TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    months_json TEXT NOT NULL DEFAULT '{}',
+    detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_hydro_dec_station ON hydro_decisions(station);
+CREATE TABLE IF NOT EXISTS hydro_monthly (
+    station TEXT NOT NULL,
+    month TEXT NOT NULL,
+    daily_mm TEXT NOT NULL,
+    cumulative_mm TEXT NOT NULL,
+    rainfall_mm TEXT NOT NULL,
+    shadowed_daily_mm TEXT NOT NULL DEFAULT '0.0',
+    days INTEGER NOT NULL,
+    missing_days INTEGER NOT NULL,
+    calendar_days INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    conflict_count INTEGER NOT NULL DEFAULT 0,
+    pending_count INTEGER NOT NULL DEFAULT 0,
+    pending_reported_mm TEXT NOT NULL DEFAULT '0.0',
+    revision INTEGER NOT NULL DEFAULT 0,
+    computed_at TEXT NOT NULL,
+    PRIMARY KEY (station, month)
+);
+CREATE TABLE IF NOT EXISTS hydro_recompute_pending (
+    station TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -91,12 +146,20 @@ class Store:
                        conn.execute("PRAGMA table_info(batches)").fetchall()}
             if "updated_at" not in columns:
                 conn.execute("ALTER TABLE batches ADD COLUMN updated_at TEXT")
+            month_columns = {row["name"] for row in
+                             conn.execute("PRAGMA table_info(hydro_monthly)").fetchall()}
+            if "shadowed_daily_mm" not in month_columns:
+                conn.execute("ALTER TABLE hydro_monthly ADD COLUMN "
+                             "shadowed_daily_mm TEXT NOT NULL DEFAULT '0.0'")
 
     @contextmanager
-    def connect(self):
+    def connect(self, *, immediate: bool = False):
         conn = sqlite3.connect(self.path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         try:
+            if immediate:
+                # 立刻拿写锁：并发补报按到达顺序排队，过期决定在锁内判定。
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
         except Exception:
@@ -351,3 +414,140 @@ class Store:
     def _all(self, sql: str, args: tuple) -> list[dict]:
         with self.connect() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    # ---------- 雨量补报台账 ----------
+    def hydro_revision(self, station: str, conn=None) -> int:
+        sql = "SELECT revision FROM hydro_stations WHERE station=?"
+        if conn is None:
+            with self.connect() as own:
+                row = own.execute(sql, (station,)).fetchone()
+        else:
+            row = conn.execute(sql, (station,)).fetchone()
+        return int(row["revision"]) if row else 0
+
+    def begin_hydro_write(self, conn, station: str, stamp: str) -> int:
+        """取下一版决定号；与观测写入同事务，保证并发补报不会拿到同一个版本。"""
+        conn.execute(
+            """INSERT INTO hydro_stations (station,revision,updated_at) VALUES (?,1,?)
+               ON CONFLICT(station) DO UPDATE SET
+                 revision=hydro_stations.revision+1, updated_at=excluded.updated_at""",
+            (station, stamp))
+        row = conn.execute("SELECT revision FROM hydro_stations WHERE station=?",
+                           (station,)).fetchone()
+        return int(row["revision"])
+
+    def find_hydro_by_request(self, request_id: str, conn=None) -> dict | None:
+        sql = "SELECT * FROM hydro_observations WHERE request_id=?"
+        if conn is None:
+            with self.connect() as own:
+                row = own.execute(sql, (request_id,)).fetchone()
+        else:
+            row = conn.execute(sql, (request_id,)).fetchone()
+        return self._hydro_observation(row) if row else None
+
+    def next_hydro_seq(self, conn, station: str) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq),0) AS n FROM hydro_observations WHERE station=?",
+            (station,)).fetchone()
+        return int(row["n"]) + 1
+
+    def insert_hydro_observation(self, conn, item: dict) -> None:
+        conn.execute(
+            """INSERT INTO hydro_observations (observation_id,request_id,request_digest,
+                station,kind,day,start_day,end_day,rainfall_mm,total_mm,attribution_json,
+                version,seq,revision,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (item["observation_id"], item["request_id"], item["request_digest"],
+             item["station"], item["kind"], item["day"], item["start_day"],
+             item["end_day"], item["rainfall_mm"], item["total_mm"],
+             item["attribution_json"], int(item["version"]), int(item["seq"]),
+             int(item["revision"]), item["created_at"]))
+
+    def load_hydro_observations(self, station: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM hydro_observations"
+        args: tuple = ()
+        if station is not None:
+            sql += " WHERE station=?"
+            args = (station,)
+        sql += " ORDER BY station, seq"
+        return [self._hydro_observation(row) for row in self._all(sql, args)]
+
+    def upsert_hydro_decision(self, conn, item: dict) -> None:
+        conn.execute(
+            """INSERT INTO hydro_decisions (observation_id,station,status,reason,
+                    months_json,detail_json)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(observation_id) DO UPDATE SET
+                 status=excluded.status, reason=excluded.reason,
+                 months_json=excluded.months_json, detail_json=excluded.detail_json""",
+            (item["observation_id"], item["station"], item["status"],
+             item.get("reason"),
+             json.dumps(item.get("months") or {}, ensure_ascii=False),
+             json.dumps(item.get("detail") or {}, ensure_ascii=False)))
+
+    def load_hydro_decisions(self, station: str | None = None) -> dict[str, dict]:
+        sql = "SELECT * FROM hydro_decisions"
+        args: tuple = ()
+        if station is not None:
+            sql += " WHERE station=?"
+            args = (station,)
+        out: dict[str, dict] = {}
+        for row in self._all(sql, args):
+            out[row["observation_id"]] = {
+                "observation_id": row["observation_id"], "station": row["station"],
+                "status": row["status"], "reason": row["reason"],
+                "months": json.loads(row["months_json"] or "{}"),
+                "detail": json.loads(row["detail_json"] or "{}"),
+            }
+        return out
+
+    def replace_hydro_months(self, conn, station: str, rows: list[dict]) -> None:
+        conn.execute("DELETE FROM hydro_monthly WHERE station=?", (station,))
+        for row in rows:
+            conn.execute(
+                """INSERT INTO hydro_monthly (station,month,daily_mm,cumulative_mm,
+                    rainfall_mm,shadowed_daily_mm,days,missing_days,calendar_days,state,
+                    conflict_count,pending_count,pending_reported_mm,revision,computed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (row["station"], row["month"], row["daily_mm"], row["cumulative_mm"],
+                 row["rainfall_mm"], row.get("shadowed_daily_mm", "0.0"),
+                 int(row["days"]), int(row["missing_days"]),
+                 int(row["calendar_days"]), row["state"], int(row["conflict_count"]),
+                 int(row["pending_count"]), row["pending_reported_mm"],
+                 int(row["revision"]), row["computed_at"]))
+
+    def load_hydro_months(self, station: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM hydro_monthly"
+        args: tuple = ()
+        if station is not None:
+            sql += " WHERE station=?"
+            args = (station,)
+        sql += " ORDER BY station, month"
+        rows = self._all(sql, args)
+        for row in rows:
+            for key in ("daily_mm", "cumulative_mm", "rainfall_mm", "shadowed_daily_mm",
+                    "pending_reported_mm"):
+                row[key] = _dec(row[key])
+        return rows
+
+    def mark_hydro_recompute(self, conn, station: str, reason: str, stamp: str) -> None:
+        conn.execute(
+            """INSERT INTO hydro_recompute_pending (station,reason,created_at)
+               VALUES (?,?,?)
+               ON CONFLICT(station) DO UPDATE SET
+                 reason=excluded.reason, created_at=excluded.created_at""",
+            (station, reason, stamp))
+
+    def clear_hydro_recompute(self, conn, station: str) -> None:
+        conn.execute("DELETE FROM hydro_recompute_pending WHERE station=?", (station,))
+
+    def load_hydro_recompute(self) -> list[dict]:
+        return self._all(
+            "SELECT * FROM hydro_recompute_pending ORDER BY created_at, station", ())
+
+    @staticmethod
+    def _hydro_observation(row) -> dict:
+        item = dict(row)
+        item["attribution"] = json.loads(item.pop("attribution_json") or "{}")
+        for key in ("rainfall_mm", "total_mm"):
+            item[key] = _dec(item[key])
+        return item

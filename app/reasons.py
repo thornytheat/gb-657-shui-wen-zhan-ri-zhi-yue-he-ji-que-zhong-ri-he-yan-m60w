@@ -16,6 +16,11 @@ REASONS: dict[str, dict[str, str]] = {
     "E_SAMPLE_UNKNOWN": {"label": "样例不存在", "level": "error"},
     "E_CONTRACT_INVALID": {"label": "表计契约无效", "level": "error"},
     "E_BATCH_NOT_FOUND": {"label": "批次不存在", "level": "error"},
+    "E_HYDRO_BAD_OBSERVATION": {"label": "雨量补报无效", "level": "error"},
+    "E_HYDRO_ATTRIBUTION_INVALID": {"label": "跨月归属证据无效", "level": "error"},
+    "E_HYDRO_STALE_REVISION": {"label": "补报决定已过期", "level": "error"},
+    "E_HYDRO_REQUEST_REUSED": {"label": "同一请求号载荷不一致", "level": "error"},
+    "E_HYDRO_RECOMPUTE_FAILED": {"label": "月量重算失败", "level": "error"},
     "Q_COLUMN_COUNT": {"label": "列数与表头不一致", "level": "error"},
     "Q_TRUNCATED_ROW": {"label": "末行被截断", "level": "error"},
     "Q_MISSING_READING": {"label": "读数为空值哨兵", "level": "error"},
@@ -30,6 +35,9 @@ REASONS: dict[str, dict[str, str]] = {
     "Q_REVERSE_READING": {"label": "读数倒走", "level": "error"},
     "Q_DUPLICATE_CONFLICT": {"label": "同键读数不一致", "level": "error"},
     "Q_METER_RETIRED": {"label": "抄表晚于换表时点", "level": "warn"},
+    "Q_HYDRO_CONFLICT_VERSION": {"label": "雨量同版本取值冲突", "level": "error"},
+    "Q_HYDRO_CONFLICT_DAILY_CUMULATIVE": {"label": "日值与累计雨量不符", "level": "error"},
+    "Q_HYDRO_CONFLICT_CUMULATIVE_OVERLAP": {"label": "累计覆盖部分重叠", "level": "error"},
     "K_ROLLOVER": {"label": "满量翻转已还原", "level": "info"},
     "K_REPLACEMENT_FIRST": {"label": "新表首读起算", "level": "info"},
     "K_ESTIMATE_SKIPPED": {"label": "估抄不作锚点", "level": "info"},
@@ -42,6 +50,11 @@ REASONS: dict[str, dict[str, str]] = {
     "K_UNIT_ASSUMED": {"label": "单位按契约补齐", "level": "info"},
     "K_UNIT_CONVERTED": {"label": "单位已折算", "level": "info"},
     "K_DUPLICATE_IDENTICAL": {"label": "重复行已合并", "level": "info"},
+    "K_HYDRO_CUMULATIVE_INCLUDED": {"label": "累计补报计入月量", "level": "info"},
+    "K_HYDRO_COVERAGE_DEDUPED": {"label": "重叠覆盖只计一次", "level": "info"},
+    "K_HYDRO_DAILY_RECONCILED": {"label": "日值与累计一致", "level": "info"},
+    "K_HYDRO_ATTRIBUTION_PENDING": {"label": "跨月归属待定", "level": "warn"},
+    "K_HYDRO_SUPERSEDED": {"label": "低版本已被取代", "level": "info"},
 }
 
 
